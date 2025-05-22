@@ -11,17 +11,6 @@ logger = logging.getLogger(__name__)
 # Replace with your actual WeatherAPI key
 WEATHERAPI_KEY = os.getenv("WEATHERAPI_KEY", "a8f656b81fb548bf82c125713251705")
 
-# Fallback coordinates for known locations
-FALLBACK_COORDINATES = {
-    "nakuru": {"lat": -0.2802724, "lon": 36.0712048, "display_name": "Nakuru, Kenya"},
-    "nairobi": {"lat": -1.286389, "lon": 36.817223, "display_name": "Nairobi, Kenya"},
-    "kiambu": {"lat": -1.036395, "lon": 36.8431312, "display_name": "Kiambu, Central Kenya, Kenya"}
-}
-
-# Fallback soil data for Kiambu
-FALLBACK_SOIL_DATA = {
-    (-1.036395, 36.8431312): {"N": 3.0, "P": 50.0, "K": 50.0, "ph": 6.0}
-}
 
 def get_lat_lon(address: str, retries: int = 3, delay: int = 2, timeout: int = 15) -> Optional[Dict[str, any]]:
     """
@@ -62,10 +51,7 @@ def get_lat_lon(address: str, retries: int = 3, delay: int = 2, timeout: int = 1
                 logger.info(f"Retrying in {delay} seconds...")
                 time.sleep(delay)
 
-    # Use fallback coordinates if available
-    if address_lower in FALLBACK_COORDINATES:
-        logger.warning(f"Using fallback coordinates for {address}: {FALLBACK_COORDINATES[address_lower]}")
-        return FALLBACK_COORDINATES[address_lower]
+
 
     logger.error(f"Failed to fetch coordinates for {address} after {retries} attempts")
     return None
@@ -77,9 +63,7 @@ def fetch_soil_data(lat: float, lon: float, retries: int = 3, delay: int = 2, ti
     """
     # Check for fallback soil data
     coord_key = (lat, lon)
-    if coord_key in FALLBACK_SOIL_DATA:
-        logger.warning(f"Using fallback soil data for lat={lat}, lon={lon}: {FALLBACK_SOIL_DATA[coord_key]}")
-        return FALLBACK_SOIL_DATA[coord_key]
+
 
     SOILGRID_API_URL = "https://rest.isric.org/soilgrids/v2.0/properties/query"
     params = {
