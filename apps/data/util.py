@@ -3,24 +3,22 @@ import requests
 import time
 import logging
 from typing import Dict, Optional
+import json
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Replace with your actual WeatherAPI key
+# WeatherAPI key
 WEATHERAPI_KEY = os.getenv("WEATHERAPI_KEY", "a8f656b81fb548bf82c125713251705")
-
+# Cache file for soil data
+CACHE_FILE = "soil_data_cache.json"
 
 def get_lat_lon(address: str, retries: int = 3, delay: int = 2, timeout: int = 15) -> Optional[Dict[str, any]]:
     """
     Fetch latitude and longitude for a given address using Nominatim with retries.
-    Uses fallback coordinates for known locations if API fails.
     """
-    # Normalize address for fallback lookup
     address_lower = address.lower().strip()
-
-    # Try Nominatim API
     url = "https://nominatim.openstreetmap.org/search"
     params = {
         'q': address,
@@ -40,7 +38,8 @@ def get_lat_lon(address: str, retries: int = 3, delay: int = 2, timeout: int = 1
                 result = {
                     'lat': float(results[0]['lat']),
                     'lon': float(results[0]['lon']),
-                    'display_name': results[0].get('display_name', address)
+                    'display_name': results[0].get('display_name', address),
+                    'name': address  # Include original address for location storage
                 }
                 logger.info(f"Fetched coordinates for {address}: {result}")
                 return result
@@ -51,83 +50,8 @@ def get_lat_lon(address: str, retries: int = 3, delay: int = 2, timeout: int = 1
                 logger.info(f"Retrying in {delay} seconds...")
                 time.sleep(delay)
 
-
-
     logger.error(f"Failed to fetch coordinates for {address} after {retries} attempts")
     return None
-
-def fetch_soil_data(lat: float, lon: float, retries: int = 3, delay: int = 2, timeout: int = 15) -> Dict[str, float]:
-    """
-    Fetch soil data from SoilGrids API for the given latitude and longitude.
-    Returns a dictionary with N, P, K, ph for the 0-5cm depth layer.
-    """
-    # Check for fallback soil data
-    coord_key = (lat, lon)
-
-
-    SOILGRID_API_URL = "https://rest.isric.org/soilgrids/v2.0/properties/query"
-    params = {
-        "lat": lat,
-        "lon": lon,
-        "depths": "0-5cm",
-        "properties": "nitrogen,phh2o"
-    }
-    headers = {'Accept': 'application/json'}
-
-    for attempt in range(1, retries + 1):
-        try:
-            response = requests.get(SOILGRID_API_URL, params=params, headers=headers, timeout=timeout)
-            response.raise_for_status()
-            data = response.json()
-            properties = data.get("properties", {})
-            if not properties:
-                logger.warning(f"SoilGrids API returned empty properties for lat: {lat}, lon: {lon}")
-                continue
-
-            soil = {'N': None, 'P': None, 'K': None, 'ph': None}
-            for layer in properties.get("layers", []):
-                if layer["name"] not in ["nitrogen", "phh2o"]:
-                    continue
-                depth_data = next((d for d in layer.get("depths", []) if d.get("label") == "0-5cm"), None)
-                if not depth_data:
-                    continue
-                mean_value = depth_data.get("values", {}).get("mean")
-                if mean_value is None:
-                    continue
-
-                if layer["name"] == "nitrogen":
-                    soil["N"] = mean_value / 100.0  # Convert cg/kg to g/kg
-                elif layer["name"] == "phh2o":
-                    soil["ph"] = mean_value / 10.0  # Convert pH*10 to pH
-
-            # Set fallback values for P and K (not available in SoilGrids)
-            soil["P"] = 50.0  # g/kg
-            soil["K"] = 50.0  # g/kg
-
-            # Use fallback for N or ph if None
-            if soil["N"] is None:
-                soil["N"] = 50.0  # g/kg
-                logger.warning(f"Using fallback for N: {soil['N']}")
-            if soil["ph"] is None:
-                soil["ph"] = 6.5  # Neutral pH
-                logger.warning(f"Using fallback for ph: {soil['ph']}")
-
-            logger.info(f"Fetched soil data for lat={lat}, lon={lon}: {soil}")
-            return soil
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"SoilGrids API error (attempt {attempt}/{retries}): {str(e)}")
-            if attempt < retries:
-                logger.info(f"Retrying in {delay} seconds...")
-                time.sleep(delay)
-
-    logger.error(f"Failed to fetch soil data after {retries} attempts for lat: {lat}, lon: {lon}")
-    return {
-        "N": 50.0,  # g/kg
-        "P": 50.0,  # g/kg
-        "K": 50.0,  # g/kg
-        "ph": 6.5   # Neutral pH
-    }
 
 def fetch_weather_data(city_name: str) -> Dict[str, Optional[float]]:
     """
@@ -166,6 +90,112 @@ def fetch_weather_data(city_name: str) -> Dict[str, Optional[float]]:
             "rainfall": 100.0     # mm
         }
 
+def load_cache() -> Dict:
+    """Load cached soil data from file."""
+    if os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, 'r') as f:
+            return json.load(f)
+    return {}
+
+def save_cache(cache: Dict) -> None:
+    """Save soil data to cache file."""
+    with open(CACHE_FILE, 'w') as f:
+        json.dump(cache, f)
+
+def fetch_soil_data(lat: float, lon: float, retries: int = 3, delay: int = 2, timeout: int = 15) -> Dict[str, float]:
+    """
+    Fetch soil data from SoilGrids API for the given latitude and longitude.
+    Returns a dictionary with N, P, K, pH for the 0-20cm depth layer in mg/kg (ppm).
+    """
+    cache = load_cache()
+    coord_key = f"{lat:.6f},{lon:.6f}"
+    if coord_key in cache:
+        logger.info(f"Using cached soil data for lat={lat}, lon={lon}")
+        # Ensure uppercase keys in cached data
+        cached_data = cache[coord_key]
+        return {
+            'N': cached_data.get('N', cached_data.get('n', 100.0)),
+            'P': cached_data.get('P', cached_data.get('p', 30.0)),
+            'K': cached_data.get('K', cached_data.get('k', 300.0)),
+            'ph': cached_data.get('ph', 6.5)
+        }
+
+    SOILGRID_API_URL = "https://rest.isric.org/soilgrids/v2.0/properties/query"
+    params = {
+        "lat": lat,
+        "lon": lon,
+        "depths": "0-20cm",
+        "properties": "nitrogen,phh2o,potassium"
+    }
+    headers = {'Accept': 'application/json'}
+
+    soil = {'N': None, 'P': None, 'K': None, 'ph': None}
+
+    for attempt in range(1, retries + 1):
+        try:
+            response = requests.get(SOILGRID_API_URL, params=params, headers=headers, timeout=timeout)
+            response.raise_for_status()
+            data = response.json()
+            properties = data.get("properties", {})
+            if not properties:
+                logger.warning(f"SoilGrids API returned empty properties for lat: {lat}, lon: {lon}")
+                continue
+
+            for layer in properties.get("layers", []):
+                if layer["name"] not in ["nitrogen", "phh2o", "potassium"]:
+                    continue
+                depth_data = next((d for d in layer.get("depths", []) if d.get("label") == "0-20cm"), None)
+                if not depth_data:
+                    continue
+                mean_value = depth_data.get("values", {}).get("mean")
+                if mean_value is None:
+                    continue
+
+                if layer["name"] == "nitrogen":
+                    soil["N"] = mean_value * 10.0  # Convert cg/kg to mg/kg
+                elif layer["name"] == "phh2o":
+                    soil["ph"] = mean_value / 10.0  # Convert pH*10 to pH
+                elif layer["name"] == "potassium":
+                    soil["K"] = mean_value * 39.1  # Convert cmol+/kg to mg/kg
+
+            soil["P"] = 30.0  # mg/kg, fallback since SoilGrids lacks P
+
+            if soil["N"] is None:
+                soil["N"] = 100.0  # mg/kg
+                logger.warning(f"Using fallback for N: {soil['N']} mg/kg")
+            if soil["P"] is None:
+                soil["P"] = 30.0  # mg/kg
+                logger.warning(f"Using fallback for P: {soil['P']} mg/kg")
+            if soil["K"] is None:
+                soil["K"] = 300.0  # mg/kg
+                logger.warning(f"Using fallback for K: {soil['K']} mg/kg")
+            if soil["ph"] is None:
+                soil["ph"] = 6.5  # Neutral pH
+                logger.warning(f"Using fallback for pH: {soil['ph']}")
+
+            cache[coord_key] = soil
+            save_cache(cache)
+            logger.info(f"Fetched soil data for lat={lat}, lon={lon}: {soil}")
+            return soil
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"SoilGrids API error (attempt {attempt}/{retries}): {str(e)}")
+            if attempt < retries:
+                logger.info(f"Retrying in {delay} seconds...")
+                time.sleep(delay)
+
+    logger.error(f"Failed to fetch soil data after {retries} attempts for lat: {lat}, lon: {lon}")
+    soil = {
+        "N": 100.0,  # mg/kg
+        "P": 30.0,   # mg/kg
+        "K": 300.0,  # mg/kg
+        "ph": 6.5    # Neutral pH
+    }
+    cache[coord_key] = soil
+    save_cache(cache)
+    logger.info(f"Using fallback soil data for lat={lat}, lon={lon}: {soil}")
+    return soil
+
 def get_model_input_features(location_name: str) -> Optional[Dict[str, float]]:
     """
     Fetch and combine soil and weather data for model input.
@@ -191,7 +221,6 @@ def get_model_input_features(location_name: str) -> Optional[Dict[str, float]]:
         "rainfall": weather_data["rainfall"]
     }
 
-    # Check for None values
     if any(v is None for v in model_input.values()):
         logger.error(f"Incomplete model input for {location_name}: {model_input}")
         return None
@@ -205,22 +234,22 @@ def get_model_input_features(location_name: str) -> Optional[Dict[str, float]]:
 
 def standardize_model_inputs(features: Dict[str, float]) -> Dict[str, float]:
     """
-    Standardize model input features to match training data ranges.
+    Standardize model input features to match training data ranges (in ppm/mg/kg).
     """
     standardized = features.copy()
     ranges = {
-        "N": {"min": 0.0, "max": 500.0},  # g/kg
-        "P": {"min": 0.0, "max": 500.0},  # g/kg
-        "K": {"min": 0.0, "max": 500.0},  # g/kg
+        "N": {"min": 0.0, "max": 200.0},  # ppm
+        "P": {"min": 0.0, "max": 150.0},  # ppm
+        "K": {"min": 0.0, "max": 200.0},  # ppm
         "ph": {"min": 3.5, "max": 10.0},  # pH units
         "temperature": {"min": 8.0, "max": 44.0},  # °C
         "humidity": {"min": 14.0, "max": 100.0},  # %
         "rainfall": {"min": 20.0, "max": 300.0}   # mm
     }
     fallback_values = {
-        "N": 50.0,  # g/kg
-        "P": 50.0,  # g/kg
-        "K": 50.0,  # g/kg
+        "N": 100.0,  # ppm
+        "P": 30.0,   # ppm
+        "K": 300.0,  # ppm
         "ph": 6.5,
         "temperature": 25.0,  # °C
         "humidity": 60.0,     # %

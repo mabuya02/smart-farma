@@ -64,19 +64,8 @@
                     <i class="fas fa-bars text-2xl"></i>
                 </button>
             </div>
-            <div class="hidden md:flex space-x-6">
-                <a href="#" class="hover:text-green-200">Home</a>
-                <a href="#" class="hover:text-green-200">Dashboard</a>
-                <a href="#" class="hover:text-green-200">About</a>
-                <a href="#" class="hover:text-green-200">Contact</a>
-            </div>
         </div>
-        <div id="mobileMenu" class="mobile-menu flex-col space-y-4 mt-4 md:hidden">
-            <a href="#" class="hover:text-green-200">Home</a>
-            <a href="#" class="hover:text-green-200">Dashboard</a>
-            <a href="#" class="hover:text-green-200">About</a>
-            <a href="#" class="hover:text-green-200">Contact</a>
-        </div>
+  
     </nav>
 
     <!-- Main Content -->
@@ -437,7 +426,7 @@
                 ]
             },
             'mothbeans': {
-                description: 'Moth bean is a droughtIMC-resistant legume crop grown primarily in arid regions for food and fodder.',
+                description: 'Moth bean is a drought-resistant legume crop grown primarily in arid regions for food and fodder.',
                 growingConditions: [
                     'Thrives in hot, dry conditions (25-35°C)',
                     'Extremely drought tolerant',
@@ -557,7 +546,7 @@
                 ]
             },
             'watermelon': {
-                description: 'Watermelon is a warm-season crop known for its sweet, juicy red flesh and high water content.',
+                description: 'Watermelon is a warm-season crop known for its sweet, juicy flesh and high water content.',
                 growingConditions: [
                     'Optimal temperature range: 25-30°C',
                     'Requires full sun exposure',
@@ -693,6 +682,60 @@
             }
         };
 
+        // Crop icon mapping
+        const cropIcons = {
+            'rice': 'fas fa-water',
+            'maize': 'fas fa-corn',
+            'chickpea': 'fas fa-seedling',
+            'kidneybeans': 'fas fa-beans',
+            'pigeonpeas': 'fas fa-leaf',
+            'mothbeans': 'fas fa-seedling',
+            'mungbean': 'fas fa-seedling',
+            'blackgram': 'fas fa-seedling',
+            'lentil': 'fas fa-seedling',
+            'pomegranate': 'fas fa-fruit',
+            'banana': 'fas fa-banana',
+            'mango': 'fas fa-fruit',
+            'grapes': 'fas fa-grapes',
+            'watermelon': 'fas fa-fruit',
+            'muskmelon': 'fas fa-fruit',
+            'apple': 'fas fa-apple',
+            'orange': 'fas fa-citrus',
+            'papaya': 'fas fa-fruit',
+            'coconut': 'fas fa-coconut',
+            'cotton': 'fas fa-seedling',
+            'jute': 'fas fa-seedling',
+            'coffee': 'fas fa-coffee',
+            'default': 'fas fa-seedling'
+        };
+
+        // Toggle mobile menu
+        document.getElementById('menuToggle').addEventListener('click', () => {
+            const mobileMenu = document.getElementById('mobileMenu');
+            mobileMenu.classList.toggle('active');
+        });
+
+        // Form submission handler
+        document.getElementById('predictionForm').addEventListener('submit', (event) => {
+            event.preventDefault();
+            const location = document.getElementById('location').value.trim();
+            const desiredCrop = document.getElementById('desiredCrop').value.trim();
+
+            if (!validateLocation(location)) {
+                document.getElementById('errorMessage').textContent = 'Invalid location. Please use letters, numbers, spaces, commas, or periods only.';
+                document.getElementById('errorMessage').classList.remove('hidden');
+                return;
+            }
+
+            if (!validateCrop(desiredCrop)) {
+                document.getElementById('errorMessage').textContent = 'Invalid crop name. Please use letters and spaces only.';
+                document.getElementById('errorMessage').classList.remove('hidden');
+                return;
+            }
+
+            getPrediction(location, desiredCrop);
+        });
+
         // Function to validate input
         function validateLocation(location) {
             const validLocationPattern = /^[a-zA-Z0-9\s,.-]+$/;
@@ -705,26 +748,44 @@
             return validCropPattern.test(crop);
         }
 
+        // Function to capitalize first letter
+        function capitalizeFirstLetter(string) {
+            return string.charAt(0).toUpperCase() + string.slice(1);
+        }
+
+        // Function to set crop icon
+        function setCropIcon(elementId, crop) {
+            const iconElement = document.getElementById(elementId);
+            const iconClass = cropIcons[crop.toLowerCase()] || cropIcons['default'];
+            iconElement.className = `${iconClass} text-4xl text-green-600`; // Adjust size/color as needed
+        }
+
+        // Function to normalize feature keys to lowercase
+        function normalizeFeatures(features) {
+            const normalized = {};
+            for (const key in features) {
+                const lowerKey = key.toLowerCase();
+                normalized[lowerKey] = features[key];
+            }
+            return normalized;
+        }
+
         // Function to get prediction from the backend
         function getPrediction(location, desiredCrop) {
-            // Reset previous errors
             const errorMessage = document.getElementById('errorMessage');
             errorMessage.classList.add('hidden');
             errorMessage.textContent = '';
 
-            // Show loading indicator
             document.getElementById('loading').style.display = 'flex';
             document.getElementById('resultsSection').classList.add('hidden');
             document.getElementById('suitabilitySection').classList.add('hidden');
 
-            // Set a timeout to prevent infinite loading
             const timeout = setTimeout(() => {
                 document.getElementById('loading').style.display = 'none';
                 errorMessage.textContent = 'Request timed out. Please try again.';
                 errorMessage.classList.remove('hidden');
-            }, 10000);
+            }, 15000);
 
-            // Fetch model input features and predictions from the backend
             fetch(`/data/model-input?location=${encodeURIComponent(location)}`)
                 .then(response => {
                     if (!response.ok) {
@@ -736,18 +797,27 @@
                     if (data.error) {
                         throw new Error(data.error);
                     }
-                    // Display the input data used for prediction
                     displayInputData(data.features);
 
-                    // Fetch predictions using the standardized features
+                    // Normalize feature keys to lowercase
+                    const normalizedFeatures = normalizeFeatures(data.features);
+                    console.log("Sending to /predict:", {
+                        features: normalizedFeatures,
+                        desired_crop: desiredCrop || '',
+                        location_id: data.location_id,
+                        location: location
+                    });
+
                     return fetch('/data/predict', {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json'
                         },
                         body: JSON.stringify({
-                            features: data.features,
-                            desired_crop: desiredCrop || ''
+                            features: normalizedFeatures,
+                            desired_crop: desiredCrop || '',
+                            location_id: data.location_id,
+                            location: location
                         })
                     });
                 })
@@ -764,7 +834,6 @@
                     if (data.error) {
                         throw new Error(data.error);
                     }
-                    // Display the prediction results and suitability
                     displayResults(data.predictions, data.suitability);
                 })
                 .catch(error => {
@@ -778,10 +847,10 @@
 
         // Function to display the input data used for the prediction
         function displayInputData(features) {
-            document.getElementById('dataN').textContent = features.N ? `${features.N.toFixed(2)} mg/kg` : 'Not available';
-            document.getElementById('dataP').textContent = features.P ? `${features.P.toFixed(2)} mg/kg` : 'Not available';
-            document.getElementById('dataK').textContent = features.K ? `${features.K.toFixed(2)} mg/kg` : 'Not available';
-            document.getElementById('dataPH').textContent = features.pH ? features.pH.toFixed(2) : 'Not available';
+            document.getElementById('dataN').textContent = features.N ? `${features.N.toFixed(2)} ppm` : 'Not available';
+            document.getElementById('dataP').textContent = features.P ? `${features.P.toFixed(2)} ppm` : 'Not available';
+            document.getElementById('dataK').textContent = features.K ? `${features.K.toFixed(2)} ppm` : 'Not available';
+            document.getElementById('dataPH').textContent = features.ph ? features.ph.toFixed(2) : 'Not available';
             document.getElementById('dataTemp').textContent = features.temperature ? `${features.temperature.toFixed(1)}°C` : 'Not available';
             document.getElementById('dataHumidity').textContent = features.humidity ? `${features.humidity.toFixed(1)}%` : 'Not available';
             document.getElementById('dataRainfall').textContent = features.rainfall ? `${features.rainfall.toFixed(1)} mm` : 'Not available';
@@ -798,7 +867,7 @@
                 return;
             }
 
-            // Display suitability if a desired crop was provided
+            // Display suitability if provided
             if (suitability) {
                 document.getElementById('suitabilitySection').classList.remove('hidden');
                 const suitabilityCard = document.getElementById('suitabilityCard');
@@ -817,134 +886,47 @@
             setCropIcon('primaryCropIcon', primaryPrediction.crop);
 
             // Alternative recommendations
-            const altElements = document.querySelectorAll('.alternative-crop');
-            const altNames = document.querySelectorAll('.alt-crop-name');
-            const altConfidences = document.querySelectorAll('.alt-crop-confidence');
-            const altBars = document.querySelectorAll('.alt-confidence-bar');
-
-            altElements.forEach((el, i) => {
-                if (i < 3) {
-                    if (i + 1 < predictions.length) {
-                        const altPrediction = predictions[i + 1];
-                        altNames[i].textContent = capitalizeFirstLetter(altPrediction.crop);
-                        altConfidences[i].textContent = `${(altPrediction.probability * 100).toFixed(1)}%`;
-                        altBars[i].style.width = `${altPrediction.probability * 100}%`;
-                        el.style.display = 'block';
-                        setCropIcon(`altCropIcon${i}`, altPrediction.crop);
-                    } else {
-                        el.style.display = 'none';
-                    }
+            const altCrops = document.querySelectorAll('.alternative-crop');
+            altCrops.forEach((cropElement, index) => {
+                if (predictions[index + 1]) {
+                    const altPrediction = predictions[index + 1];
+                    cropElement.querySelector('.alt-crop-name').textContent = capitalizeFirstLetter(altPrediction.crop);
+                    cropElement.querySelector('.alt-crop-confidence').textContent = `${(altPrediction.probability * 100).toFixed(1)}%`;
+                    cropElement.querySelector('.alt-confidence-bar').style.width = `${altPrediction.probability * 100}%`;
+                    setCropIcon(`altCropIcon${index}`, altPrediction.crop);
+                } else {
+                    cropElement.querySelector('.alt-crop-name').textContent = '-';
+                    cropElement.querySelector('.alt-crop-confidence').textContent = '-';
+                    cropElement.querySelector('.alt-confidence-bar').style.width = '0%';
+                    setCropIcon(`altCropIcon${index}`, 'default');
                 }
             });
 
-            // Display crop information for the primary recommendation
-            displayCropInfo(primaryPrediction.crop);
-        }
-
-        // Function to display crop information
-        function displayCropInfo(cropName) {
-            const cropInfo = cropDatabase[cropName.toLowerCase()];
-
-            if (cropInfo) {
-                document.getElementById('cropInfoName').textContent = capitalizeFirstLetter(cropName);
-                document.getElementById('cropInfoDescription').textContent = cropInfo.description;
-
-                const growingConditionsList = document.getElementById('cropGrowingConditions');
-                growingConditionsList.innerHTML = '';
-                cropInfo.growingConditions.forEach(condition => {
-                    const li = document.createElement('li');
-                    li.textContent = condition;
-                    li.className = 'text-sm text-gray-600';
-                    growingConditionsList.appendChild(li);
-                });
-
-                const careInstructionsList = document.getElementById('cropCareInstructions');
-                careInstructionsList.innerHTML = '';
-                cropInfo.careInstructions.forEach(instruction => {
-                    const li = document.createElement('li');
-                    li.textContent = instruction;
-                    li.className = 'text-sm text-gray-600';
-                    careInstructionsList.appendChild(li);
-                });
-            } else {
-                document.getElementById('cropInfoName').textContent = capitalizeFirstLetter(cropName);
-                document.getElementById('cropInfoDescription').textContent = 'Detailed information not available for this crop.';
-                document.getElementById('cropGrowingConditions').innerHTML = '<li>Information not available</li>';
-                document.getElementById('cropCareInstructions').innerHTML = '<li>Information not available</li>';
-            }
-        }
-
-        // Helper function to set appropriate icon for crop
-        function setCropIcon(elementId, cropName) {
-            const iconElement = document.getElementById(elementId);
-            if (!iconElement) return;
-
-            const cropIconMap = {
-                'rice': 'fa-wheat-awn',
-                'maize': 'fa-wheat-awn',
-                'chickpea': 'fa-seedling',
-                'kidneybeans': 'fa-seedling',
-                'pigeonpeas': 'fa-seedling',
-                'mothbeans': 'fa-seedling',
-                'mungbean': 'fa-seedling',
-                'blackgram': 'fa-seedling',
-                'lentil': 'fa-seedling',
-                'pomegranate': 'fa-apple-whole',
-                'banana': 'fa-apple-whole',
-                'mango': 'fa-apple-whole',
-                'grapes': 'fa-apple-whole',
-                'watermelon': 'fa-apple-whole',
-                'muskmelon': 'fa-apple-whole',
-                'apple': 'fa-apple-whole',
-                'orange': 'fa-apple-whole',
-                'papaya': 'fa-apple-whole',
-                'coconut': 'fa-apple-whole',
-                'cotton': 'fa-leaf',
-                'jute': 'fa-leaf',
-                'coffee': 'fa-mug-hot'
+            // Display crop information for primary recommendation
+            const cropInfo = cropDatabase[primaryPrediction.crop.toLowerCase()] || {
+                description: 'No detailed information available for this crop.',
+                growingConditions: ['Information not available.'],
+                careInstructions: ['Information not available.']
             };
+            document.getElementById('cropInfoName').textContent = capitalizeFirstLetter(primaryPrediction.crop);
+            document.getElementById('cropInfoDescription').textContent = cropInfo.description;
 
-            const iconClass = cropIconMap[cropName.toLowerCase()] || 'fa-seedling';
-            iconElement.className = `fas ${iconClass} text-4xl text-green-600`;
+            const growingConditionsList = document.getElementById('cropGrowingConditions');
+            growingConditionsList.innerHTML = '';
+            cropInfo.growingConditions.forEach(condition => {
+                const li = document.createElement('li');
+                li.textContent = condition;
+                growingConditionsList.appendChild(li);
+            });
+
+            const careInstructionsList = document.getElementById('cropCareInstructions');
+            careInstructionsList.innerHTML = '';
+            cropInfo.careInstructions.forEach(instruction => {
+                const li = document.createElement('li');
+                li.textContent = instruction;
+                careInstructionsList.appendChild(li);
+            });
         }
-
-        // Helper function to capitalize the first letter of a string
-        function capitalizeFirstLetter(string) {
-            return string.charAt(0).toUpperCase() + string.slice(1);
-        }
-
-        // Form submission event handler
-        document.getElementById('predictionForm').addEventListener('submit', function(e) {
-            e.preventDefault();
-            const location = document.getElementById('location').value.trim();
-            const desiredCrop = document.getElementById('desiredCrop').value.trim();
-
-            if (!location) {
-                document.getElementById('errorMessage').textContent = 'Please enter a location.';
-                document.getElementById('errorMessage').classList.remove('hidden');
-                return;
-            }
-
-            if (!validateLocation(location)) {
-                document.getElementById('errorMessage').textContent = 'Please enter a valid location (letters, numbers, commas, spaces, and periods only).';
-                document.getElementById('errorMessage').classList.remove('hidden');
-                return;
-            }
-
-            if (desiredCrop && !validateCrop(desiredCrop)) {
-                document.getElementById('errorMessage').textContent = 'Please enter a valid crop name (letters and spaces only).';
-                document.getElementById('errorMessage').classList.remove('hidden');
-                return;
-            }
-
-            getPrediction(location, desiredCrop);
-        });
-
-        // Mobile menu toggle
-        document.getElementById('menuToggle').addEventListener('click', function() {
-            const mobileMenu = document.getElementById('mobileMenu');
-            mobileMenu.classList.toggle('active');
-        });
     </script>
 </body>
 </html>
