@@ -3,13 +3,36 @@ from apps.home import blueprint
 from flask import render_template, request
 from flask_login import login_required
 from jinja2 import TemplateNotFound
-
+from apps.data.models import SoilData, WeatherData
+from apps.crop.models import Location
+from apps.model.models import Prediction
 
 @blueprint.route('/index')
 @login_required
 def index():
+    total_locations = Location.query.count()
+    total_predictions = Prediction.query.count()
+    total_soil_records = SoilData.query.count()
+    total_weather_records = WeatherData.query.count()
+    recent_predictions = Prediction.query.order_by(Prediction.timestamp.desc()).limit(5).all()
 
-    return render_template('home/index.html', segment='index')
+    from collections import Counter
+    crop_counts = Counter([p.crop_recommended for p in Prediction.query.all()])
+    labels = list(crop_counts.keys())
+    data = list(crop_counts.values())
+
+    return render_template(
+        'home/index.html',
+        segment='index',
+        total_locations=total_locations,
+        total_predictions=total_predictions,
+        total_soil_records=total_soil_records,
+        total_weather_records=total_weather_records,
+        recent_predictions=recent_predictions,
+        labels=labels,
+        data=data
+    )
+
 
 
 @blueprint.route('/<template>')
