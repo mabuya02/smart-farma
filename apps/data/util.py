@@ -4,6 +4,8 @@ import time
 import logging
 from typing import Dict, Optional
 import json
+import openai
+import google.generativeai as genai
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -13,6 +15,17 @@ logger = logging.getLogger(__name__)
 WEATHERAPI_KEY = os.getenv("WEATHERAPI_KEY", "a8f656b81fb548bf82c125713251705")
 # Cache file for soil data
 CACHE_FILE = "soil_data_cache.json"
+
+# iSDAsoil API credentials
+ISDA_API_USERNAME = os.getenv("ISDA_API_USERNAME", "YOUR_EMAIL")
+ISDA_API_PASSWORD = os.getenv("ISDA_API_PASSWORD", "YOUR_PASSWORD")
+ISDA_API_BASE_URL = "http://test-api.isda-africa.com/isdasoil/v2"
+
+# OpenAI API key
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# Google Generative AI API key
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 def get_lat_lon(address: str, retries: int = 3, delay: int = 2, timeout: int = 15) -> Optional[Dict[str, any]]:
     """
@@ -102,10 +115,42 @@ def save_cache(cache: Dict) -> None:
     with open(CACHE_FILE, 'w') as f:
         json.dump(cache, f)
 
+def get_isda_token() -> Optional[str]:
+    """
+    Authenticate with iSDAsoil API and return a JWT token.
+    """
+    url = f"{ISDA_API_BASE_URL}/login"
+    data = {
+        "username": ISDA_API_USERNAME,
+        "password": ISDA_API_PASSWORD
+    }
+    headers = {
+        "accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+    try:
+        response = requests.post(url, data=data, headers=headers, timeout=10)
+        response.raise_for_status()
+        token = response.json().get("token")
+        if token:
+            logger.info("Successfully obtained iSDAsoil API token")
+            return token
+        else:
+            logger.error("Failed to obtain token from iSDAsoil API response")
+            return None
+    except Exception as e:
+        logger.error(f"Error obtaining iSDAsoil API token: {str(e)}")
+        return None
+
 def fetch_soil_data(lat: float, lon: float, retries: int = 3, delay: int = 2, timeout: int = 15) -> Dict[str, float]:
     """
-    Fetch soil data from SoilGrids API for the given latitude and longitude.
+    Fetch soil data from iSDAsoil API for the given latitude and longitude.
     Returns a dictionary with N, P, K, pH for the 0-20cm depth layer in mg/kg (ppm).
+    Fetches the following soil properties:
+    - nitrogen_total
+    - phosphorous_extractable
+    - potassium_extractable
+    - ph
     """
     cache = load_cache()
     coord_key = f"{lat:.6f},{lon:.6f}"
@@ -120,45 +165,53 @@ def fetch_soil_data(lat: float, lon: float, retries: int = 3, delay: int = 2, ti
             'ph': cached_data.get('ph', 6.5)
         }
 
-    SOILGRID_API_URL = "https://rest.isric.org/soilgrids/v2.0/properties/query"
+    token = get_isda_token()
+    if not token:
+        logger.error("Failed to obtain iSDAsoil API token, using fallback soil data")
+        soil = {
+            "N": 100.0,  # mg/kg
+            "P": 30.0,   # mg/kg
+            "K": 300.0,  # mg/kg
+            "ph": 6.5    # Neutral pH
+        }
+        cache[coord_key] = soil
+        save_cache(cache)
+        return soil
+
+    url = f"{ISDA_API_BASE_URL}/soilproperty"
     params = {
-        "lat": lat,
         "lon": lon,
-        "depths": "0-20cm",
-        "properties": "nitrogen,phh2o,potassium"
+        "lat": lat,
+        "depth": "0-20",
+        "property": "nitrogen_total,phosphorous_extractable,potassium_extractable,ph"
     }
-    headers = {'Accept': 'application/json'}
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "accept": "application/json"
+    }
 
     soil = {'N': None, 'P': None, 'K': None, 'ph': None}
 
     for attempt in range(1, retries + 1):
         try:
-            response = requests.get(SOILGRID_API_URL, params=params, headers=headers, timeout=timeout)
+            response = requests.get(url, params=params, headers=headers, timeout=timeout)
             response.raise_for_status()
             data = response.json()
             properties = data.get("properties", {})
             if not properties:
-                logger.warning(f"SoilGrids API returned empty properties for lat: {lat}, lon: {lon}")
+                logger.warning(f"iSDAsoil API returned empty properties for lat: {lat}, lon: {lon}")
                 continue
 
-            for layer in properties.get("layers", []):
-                if layer["name"] not in ["nitrogen", "phh2o", "potassium"]:
-                    continue
-                depth_data = next((d for d in layer.get("depths", []) if d.get("label") == "0-20cm"), None)
-                if not depth_data:
-                    continue
-                mean_value = depth_data.get("values", {}).get("mean")
-                if mean_value is None:
-                    continue
-
-                if layer["name"] == "nitrogen":
-                    soil["N"] = mean_value * 10.0  # Convert cg/kg to mg/kg
-                elif layer["name"] == "phh2o":
-                    soil["ph"] = mean_value / 10.0  # Convert pH*10 to pH
-                elif layer["name"] == "potassium":
-                    soil["K"] = mean_value * 39.1  # Convert cmol+/kg to mg/kg
-
-            soil["P"] = 30.0  # mg/kg, fallback since SoilGrids lacks P
+            # Map iSDAsoil properties to our soil keys
+            property_mapping = {
+                "nitrogen_total": "N",
+                "phosphorous_extractable": "P",
+                "potassium_extractable": "K",
+                "ph": "ph"
+            }
+            for prop, value in properties.items():
+                if prop in property_mapping:
+                    soil[property_mapping[prop]] = float(value)
 
             if soil["N"] is None:
                 soil["N"] = 100.0  # mg/kg
@@ -179,7 +232,7 @@ def fetch_soil_data(lat: float, lon: float, retries: int = 3, delay: int = 2, ti
             return soil
 
         except requests.exceptions.RequestException as e:
-            logger.error(f"SoilGrids API error (attempt {attempt}/{retries}): {str(e)}")
+            logger.error(f"iSDAsoil API error (attempt {attempt}/{retries}): {str(e)}")
             if attempt < retries:
                 logger.info(f"Retrying in {delay} seconds...")
                 time.sleep(delay)
@@ -250,39 +303,67 @@ def standardize_model_inputs(features: Dict[str, float]) -> Dict[str, float]:
         "N": 100.0,  # ppm
         "P": 30.0,   # ppm
         "K": 300.0,  # ppm
-        "ph": 6.5,
+        "ph": 6.5,   # pH units
         "temperature": 25.0,  # °C
         "humidity": 60.0,     # %
         "rainfall": 100.0     # mm
     }
-
-    for key in features:
-        if features.get(key) is None or not isinstance(features[key], (int, float)):
-            logger.warning(f"{key} is missing or invalid. Using fallback value: {fallback_values[key]}")
-            standardized[key] = fallback_values[key]
-        else:
-            value = features[key]
+    for key, value in standardized.items():
+        if key in ranges:
             min_val = ranges[key]["min"]
             max_val = ranges[key]["max"]
-            standardized[key] = max(min_val, min(max_val, value))
-            if value != standardized[key]:
-                logger.info(f"Clipped {key} from {value} to {standardized[key]}")
-
+            if value < min_val:
+                standardized[key] = min_val
+            elif value > max_val:
+                standardized[key] = max_val
+        else:
+            standardized[key] = fallback_values.get(key, value)
     return standardized
 
 def print_standardization_summary(original: Dict[str, float], standardized: Dict[str, float]) -> None:
     """
-    Log the original and standardized feature values for debugging.
+    Print a summary of the standardization process.
     """
-    logger.info("\n===== Standardization Summary =====")
-    logger.info("{:<15} {:<15} {:<15} {:<15}".format("Feature", "Original", "Standardized", "Status"))
-    logger.info("-" * 60)
-
+    logger.info("\n📊 Standardization Summary")
+    logger.info("=========================")
     for key in original:
-        original_val = original[key]
-        standardized_val = standardized.get(key, "N/A")
-        status = "Modified" if original_val != standardized_val else "Unchanged"
-        logger.info("{:<15} {:<15} {:<15} {:<15}".format(
-            key, str(original_val), str(standardized_val), status))
+        logger.info(f"{key}: {original[key]} -> {standardized[key]}")
 
-    logger.info("=" * 60)
+def get_gemini_recommendation(soil_data, weather_data, crop=None):
+    """
+    Use Google Generative AI (Gemini) to generate expert farming tips and recommendations based on soil, weather, and crop data.
+    """
+    if not GEMINI_API_KEY:
+        return "Google API key is not set. Please configure it in your environment."
+    genai.configure(api_key=GEMINI_API_KEY)
+    prompt = f"""
+    Given the following soil and weather data:
+    Soil: {soil_data}
+    Weather: {weather_data}
+    {f'Crop: {crop}' if crop else ''}
+    Provide actionable, expert farming tips and recommendations for this location. Be concise and practical.
+    """
+    try:
+        # Using gemini-2.0-flash model for faster responses
+        model = genai.GenerativeModel('gemini-2.0-flash')
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        logger.error(f"Error in Gemini API call: {str(e)}")
+        return f"Error fetching Gemini recommendation: {str(e)}"
+
+def test_gemini_connection():
+    """
+    Test function to verify Gemini API connectivity
+    """
+    if not GEMINI_API_KEY:
+        return "Google API key is not set. Please configure it in your environment."
+    
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel('gemini-2.0-flash')
+        response = model.generate_content("Test connection - respond with 'Connection successful'")
+        return response.text
+    except Exception as e:
+        logger.error(f"Error testing Gemini connection: {str(e)}")
+        return f"Error testing Gemini connection: {str(e)}"

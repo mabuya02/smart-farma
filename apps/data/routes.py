@@ -1,5 +1,5 @@
 from flask import Blueprint, render_template, request, jsonify
-from apps.data.util import get_lat_lon, fetch_soil_data, get_model_input_features, fetch_weather_data, standardize_model_inputs, print_standardization_summary
+from apps.data.util import get_lat_lon, fetch_soil_data, get_model_input_features, fetch_weather_data, standardize_model_inputs, print_standardization_summary, get_gemini_recommendation, test_gemini_connection
 from apps.data.models import SoilData, WeatherData
 from apps.crop.models import Location
 from apps.model.models import Prediction
@@ -556,9 +556,16 @@ def predict():
             logger.error(f"Error saving prediction to database: {str(e)}")
             return jsonify({'error': 'Failed to save prediction to database'}), 500
 
+        # --- Gemini Integration ---
+        # Compose soil and weather data for Gemini
+        soil_data = {k: features[k] for k in ['n', 'p', 'k', 'ph']}
+        weather_data = {k: features[k] for k in ['temperature', 'humidity', 'rainfall']}
+        gemini_recommendation = get_gemini_recommendation(soil_data, weather_data, predicted_crop)
+
         response = {
             'predictions': predictions,
-            'suitability': suitability
+            'suitability': suitability,
+            'openai_recommendation': gemini_recommendation
         }
         logger.info(f"Prediction successful: {response}")
         return jsonify(response), 200
@@ -566,3 +573,9 @@ def predict():
     except Exception as e:
         logger.error(f"Prediction error: {str(e)}. Input features: {features}")
         return jsonify({'error': f'Prediction error: {str(e)}'}), 500
+
+@blueprint.route('/test-gemini', methods=['GET'])
+def test_gemini():
+    """Test route to verify Gemini API connectivity"""
+    result = test_gemini_connection()
+    return jsonify({"status": "success", "result": result})
